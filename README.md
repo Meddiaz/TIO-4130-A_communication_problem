@@ -1,1 +1,2 @@
-# TI-4130-A_communication_problem
+# TIØ4130 - A communication problem
+

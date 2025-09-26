@@ -1,0 +1,27 @@
+name,x,y,area,demand
+Warszawa,100,65,1,
+Skierniewice,92,62,1,197
+Łódź,85,58,1,317
+Konin,68,64,1,236
+Sieradz,72,55,1,178
+Piotrków,89,51,1,139
+Radom,102,50,1,288
+Kielce,98,42,2,
+Czestochowa,79,40,2,278
+Bytom,76,31,2,163
+Gliwice,73,30,2,105
+Sosnowiec,80,29,2,143
+Kraków,89,25,2,331
+Bielsko,79,20,2,276
+Katowice,78,28,2,263
+Jastrzębie-Zdrój,74,23,2,137
+Wodzisław Śl.,71,23,2,119
+Poznań,54,68,3,251
+Zielona Góra,39,60,3,121
+Leszno,51,58,3,84
+Kalisz,65,58,3,207
+Legnica,45,47,3,176
+Wrocław,54,45,3,133
+Jelenia Góra,40,42,3,167
+Wałbrzych,46,39,3,129
+Opole,67,37,3,
