@@ -4,9 +4,13 @@
 
 from math import pi
 from collections import defaultdict
+import os
+
 import gurobipy as gp
 from gurobipy import GRB
 import pandas as pd
+import plotly.graph_objects as go
+
 
 # ---------- Load city data ----------
 df = pd.read_csv("cities.csv")
@@ -280,6 +284,146 @@ def solve_part2(included_indices: set, verbose: bool = False):
     return total_cost, city_flows, kielce_util, pi_rhs_ranges, konin_info
 
 
+def build_network_figure(path_names, included_idx, city_flows):
+    """Create a Plotly figure showing the main line and city-to-hub connections."""
+    city_coords = {name: (x, y) for name, x, y, _area, _demand in CITIES}
+    hubs = {h: city_coords[h] for h in HUBS}
+    main_set = set(path_names)
+
+    fig = go.Figure()
+
+    # Draw main line segments
+    for idx in range(len(path_names) - 1):
+        a = path_names[idx]
+        b = path_names[idx + 1]
+        x0, y0 = city_coords[a]
+        x1, y1 = city_coords[b]
+        fig.add_trace(
+            go.Scatter(
+                x=[x0, x1],
+                y=[y0, y1],
+                mode='lines',
+                line=dict(color='navy', width=4),
+                name='Main line' if idx == 0 else None,
+                hovertemplate=f"{a} -> {b}<extra></extra>",
+                showlegend=(idx == 0)
+            )
+        )
+
+    # Draw city-to-hub flows
+    hub_colors = {'Warszawa': "#d62728", "Kielce": "#2ca02c", "Opole": "#9467bd"}
+    legend_flags = {h: False for h in HUBS}
+    for city_name, flows in city_flows.items():
+        if city_name in HUBS:
+            continue
+        x0, y0 = city_coords[city_name]
+        for hub, flow in flows.items():
+            if flow <= 1e-6:
+                continue
+            x1, y1 = hubs[hub]
+            width = max(1.0, flow / 40.0)
+            color = hub_colors.get(hub, "#7f7f7f")
+            showlegend = False
+            if not legend_flags.get(hub, True):
+                showlegend = True
+                legend_flags[hub] = True
+            fig.add_trace(
+                go.Scatter(
+                    x=[x0, x1],
+                    y=[y0, y1],
+                    mode='lines',
+                    line=dict(color=color, width=width, dash='dot'),
+                    name=f"Flows to {hub}" if showlegend else None,
+                    hovertemplate=f"{city_name} -> {hub}<br>Flow: {flow:.2f} TB/s<extra></extra>",
+                    showlegend=showlegend
+                )
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[(x0 + x1) / 2],
+                    y=[(y0 + y1) / 2],
+                    mode='text',
+                    text=[f"{flow:.1f} TB/s"],
+                    textposition='top center',
+                    showlegend=False,
+                    hoverinfo='skip'
+                )
+            )
+
+    # Plot hubs
+    hub_x = [hubs[h][0] for h in HUBS]
+    hub_y = [hubs[h][1] for h in HUBS]
+    fig.add_trace(
+        go.Scatter(
+            x=hub_x,
+            y=hub_y,
+            mode='markers+text',
+            marker=dict(size=14, color='#ff7f0e', symbol='square'),
+            text=HUBS,
+            textposition='top center',
+            name='Switching stations',
+            hovertemplate='%{text}<extra></extra>',
+            showlegend=bool(HUBS)
+        )
+    )
+
+    # Plot main-line cities
+    main_labels = [name for name in path_names if name not in HUBS]
+    main_x = [city_coords[name][0] for name in main_labels]
+    main_y = [city_coords[name][1] for name in main_labels]
+    fig.add_trace(
+        go.Scatter(
+            x=main_x,
+            y=main_y,
+            mode='markers+text',
+            marker=dict(size=10, color='navy'),
+            name='Main line cities',
+            hovertemplate='%{text}<extra></extra>',
+            text=main_labels,
+            textposition='top center',
+            showlegend=bool(main_labels)
+        )
+    )
+
+    # Plot remaining cities
+    remaining = [name for name, *_rest in CITIES if name not in main_set and name not in HUBS]
+    if remaining:
+        rem_x = [city_coords[name][0] for name in remaining]
+        rem_y = [city_coords[name][1] for name in remaining]
+        fig.add_trace(
+            go.Scatter(
+                x=rem_x,
+                y=rem_y,
+                mode='markers+text',
+                marker=dict(size=8, color='gray'),
+                name='Other cities',
+                text=remaining,
+                hovertemplate='%{text}<extra></extra>',
+                textposition='top center',
+                showlegend=bool(remaining)
+            )
+        )
+
+    fig.update_layout(
+        title='Southwestern Poland Communication Network',
+        xaxis=dict(title='X coordinate', showgrid=False, zeroline=False),
+        yaxis=dict(title='Y coordinate', showgrid=False, zeroline=False, scaleanchor='x', scaleratio=1),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.15, x=0.5, xanchor='center'),
+        margin=dict(l=40, r=40, t=60, b=60),
+    )
+
+    return fig
+
+
+def save_network_figure(fig):
+    """Persist the interactive map to HTML."""
+    os.makedirs("outputs", exist_ok=True)
+    html_path = os.path.join("outputs", "network_map.html")
+    fig.write_html(html_path)
+    print()
+    print(f"Interactive map saved to {html_path}")
+
 def analyze_konin_sensitivity(konin_info):
     '''Analyze Konin demand sensitivity.'''
     if not konin_info:
@@ -430,4 +574,8 @@ if __name__ == "__main__":
     
     print(f"\n   pi Parameter Sensitivity:")
     analyze_pi_interval(pi_rhs_ranges)
+
+    fig = build_network_figure(path, included_idx, city_flows)
+    save_network_figure(fig)
+    fig.show()
  
