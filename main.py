@@ -42,6 +42,7 @@ BYT, SOS, KAT = IDX["Bytom"], IDX["Sosnowiec"], IDX["Katowice"]
 WOD, JAS = IDX["Wodzisław Śl."], IDX["Jastrzębie-Zdrój"]
 POZ, ZIE, LES = IDX["Poznań"], IDX["Zielona Góra"], IDX["Leszno"]
 
+
 def build_allowed_arcs():
     """Part 1: only within-area arcs + Achilles links (both directions)."""
     E = []
@@ -54,6 +55,7 @@ def build_allowed_arcs():
             E.append((i, j))
             DIST[(i, j)] = d
     return E, DIST
+
 
 def solve_part1(verbose: bool = False):
     """Optimal main line path from Warszawa to Jelenia Góra (Part 1)."""
@@ -139,14 +141,17 @@ def solve_part1(verbose: bool = False):
     path_names = [CITIES[i][0] for i in path_idx]
     return total_len, path_names, set(path_idx)
 
+
 # ---------- Part 2 (LP): connect remaining cities to hubs ----------
 
 HUBS = ["Warszawa", "Kielce", "Opole"]
 HUB_CAP = {"Warszawa": 800, "Kielce": 1200, "Opole": 400}
 
+
 def distance(i, j):
     (ni, xi, yi, _, _), (nj, xj, yj, _, _) = CITIES[i], CITIES[j]
     return ((xi - xj)**2 + (yi - yj)**2) ** 0.5
+
 
 def max_cable_capacity(dist_ij):
     """U = min(200, max(0, 2*pi*min(35, 70-d)))"""
@@ -155,83 +160,197 @@ def max_cable_capacity(dist_ij):
     cap = 2 * pi * atten
     return min(200.0, cap)
 
+
 def solve_part2(included_indices: set, verbose: bool = False):
-    """LP: connect each city not on the main line to at least one hub, minimum cost."""
-    # Remaining cities R (exclude hubs with demand None and any on main line)
+    '''LP: connect each city not on the main line to at least one hub, minimum cost.'''
     hub_idx = {h: IDX[h] for h in HUBS}
+    # Collect demand cities not already served by the main line or hubs.
     R = []
     for i, (name, x, y, area, demand) in enumerate(CITIES):
         if i in included_indices:
             continue
-        if demand is None:  # hubs have None demand
+        if demand is None:
             continue
         R.append(i)
 
+    # No remaining demand nodes -> nothing to connect.
     if not R:
-        return 0.0, {}, 0.0
+        return 0.0, {}, 0.0, [], None
 
-    # Precompute distances and per-cable upper bounds U_{i,s}
+    # Precompute geometry and attenuation terms once.
     dist_is = {}
-    U = {}
+    atten_caps = {}
+    atten_values = {}
     for i in R:
         for h in HUBS:
             s = hub_idx[h]
             d = distance(i, s)
             dist_is[(i, h)] = d
-            U[(i, h)] = max_cable_capacity(d)
+            atten = min(35, 70 - d)
+            atten = max(0.0, atten)
+            atten_caps[(i, h)] = 2 * pi * atten
+            atten_values[(i, h)] = atten
 
     m = gp.Model("connect_remaining_cities")
     m.Params.OutputFlag = 1 if verbose else 0
 
-    # Decision variables f_{i,h} >= 0
+    # Flow decision variables f[i, h] represent capacity installed on city-hub cables.
     f = m.addVars([(i, h) for i in R for h in HUBS], lb=0.0, name="f")
 
-    # Objective: min sum 1000 * distance * flow
-    m.setObjective(gp.quicksum(1000.0 * dist_is[(i, h)] * f[i, h] for i in R for h in HUBS), GRB.MINIMIZE)
+    # Minimize total installation cost (distance-weighted capacity).
+    m.setObjective(
+        gp.quicksum(1000.0 * dist_is[(i, h)] * f[i, h] for i in R for h in HUBS),
+        GRB.MINIMIZE,
+    )
 
-    # Demand satisfaction
+    # Each city must ship its entire demand to the hubs.
+    demand_constrs = {}
     for i in R:
         Di = CITIES[i][4]
-        m.addConstr(gp.quicksum(f[i, h] for h in HUBS) == Di)
+        constr = m.addConstr(gp.quicksum(f[i, h] for h in HUBS) == Di)
+        demand_constrs[i] = constr
 
-    # Per-cable upper bounds (200 TB/s and attenuation)
+    # Cable-specific capacity: attenuation limit and absolute 200 TB/s cap.
+    atten_cap_constrs = {}
     for i in R:
         for h in HUBS:
-            m.addConstr(f[i, h] <= U[(i, h)])
+            cap = atten_caps[(i, h)]
+            if cap < 200.0:
+                constr = m.addConstr(f[i, h] <= cap)
+                atten_cap_constrs[(i, h)] = constr
+            else:
+                m.addConstr(f[i, h] <= 200.0)
 
-    # Station capacities
+    # Switching-station capacity at each hub.
     for h in HUBS:
         m.addConstr(gp.quicksum(f[i, h] for i in R) <= HUB_CAP[h])
 
-    # Łódź max 40% per cable (only if Łódź in R)
+    # Lodz policy: any single cable can carry at most 40% of the city's demand.
     if "Łódź" in IDX and IDX["Łódź"] in R:
-        Dlodz = CITIES[IDX["Łódź"]][4]
+        lodz_idx = IDX["Łódź"]
+        Dlodz = CITIES[lodz_idx][4]
         for h in HUBS:
-            m.addConstr(f[IDX["Łódź"], h] <= 0.4 * Dlodz)
+            m.addConstr(f[lodz_idx, h] <= 0.4 * Dlodz)
 
     m.optimize()
     if m.Status != GRB.OPTIMAL:
         raise RuntimeError(f"Gurobi status (Part 2): {m.Status}")
 
-    # Outputs
+    # Read out primal solution and derived summaries.
     total_cost = m.ObjVal
     flows = {(CITIES[i][0], h): f[i, h].X for i in R for h in HUBS}
 
-    # Specific questions:
-    poz = IDX["Poznań"]
-    wal = IDX["Wałbrzych"]
-    poz_flows = {h: flows.get((CITIES[poz][0], h), 0.0) for h in HUBS}
-    wal_flows = {h: flows.get((CITIES[wal][0], h), 0.0) for h in HUBS}
+    # Repackage flows by city for easier reporting.
+    city_flows = {}
+    for i in R:
+        city_name = CITIES[i][0]
+        city_flows[city_name] = {h: flows.get((city_name, h), 0.0) for h in HUBS}
 
+    # Total flow into Kielce for utilization statistics.
     kielce_util = sum(flows.get((CITIES[i][0], "Kielce"), 0.0) for i in R)
 
-    return total_cost, {"Poznań": poz_flows, "Wałbrzych": wal_flows}, kielce_util
+    pi_rhs_ranges = []
+    # Store attenuation-limited RHS data so we can back out the admissible pi interval later.
+    for (i, h), constr in atten_cap_constrs.items():
+        atten = atten_values[(i, h)]
+        pi_rhs_ranges.append(
+            {
+                "city_idx": i,
+                "city_name": CITIES[i][0],
+                "hub": h,
+                "atten": atten,
+                "rhs": constr.RHS,
+                "rhs_low": constr.SARHSLow,
+                "rhs_up": constr.SARHSUp,
+            }
+        )
 
-# ---------- Run both parts ----------
+    # Capture Konin demand dual information for sensitivity analysis.
+    konin_info = None
+    if "Konin" in IDX and IDX["Konin"] in R:
+        konin_idx = IDX["Konin"]
+        constr = demand_constrs[konin_idx]
+        konin_info = {
+            "demand": CITIES[konin_idx][4],
+            "dual": constr.Pi,
+            "rhs_low": constr.SARHSLow,
+            "rhs_up": constr.SARHSUp,
+        }
+
+    return total_cost, city_flows, kielce_util, pi_rhs_ranges, konin_info
+
+
+def analyze_konin_sensitivity(konin_info):
+    '''Analyze Konin demand sensitivity.'''
+    if not konin_info:
+        print("   Konin is not part of the connection LP; no sensitivity information available.")
+        return
+
+    konin_demand = konin_info["demand"]
+    konin_dual = konin_info["dual"]
+    rhs_low = konin_info["rhs_low"]
+    rhs_up = konin_info["rhs_up"]
+
+    print(f"   Konin current demand: {konin_demand} TB/s")
+    print(f"   Konin shadow price: {konin_dual:.4f} EUR per TB/s")
+
+    # Gurobi's SARHSLow/Up give the RHS window where the dual remains valid.
+    def within_bounds(value):
+        low_ok = True if rhs_low == -GRB.INFINITY else value >= rhs_low
+        up_ok = True if rhs_up == GRB.INFINITY else value <= rhs_up
+        return low_ok and up_ok
+
+    for pct in [10, 20]:
+        demand_change = konin_demand * (pct / 100.0)
+        lower = konin_demand - demand_change
+        upper = konin_demand + demand_change
+        in_range = within_bounds(lower) and within_bounds(upper)
+        cost_change = konin_dual * demand_change
+        note = "" if in_range else " (outside valid sensitivity range)"
+        print(
+            f"   +/-{pct}% demand change (+/-{demand_change:.1f} TB/s): "
+            f"Total cost shifts by +/-{abs(cost_change):,.2f} EUR{note}"
+        )
+
+
+def analyze_pi_interval(pi_rhs_ranges):
+    '''Calculate pi interval for current basis optimality.'''
+    if not pi_rhs_ranges:
+        print("   No pi-dependent capacity constraints were active; pi can vary freely (pi > 0).")
+        return
+
+    pi_lower = 0.0
+    pi_upper = float("inf")
+
+    for info in pi_rhs_ranges:
+        atten = info["atten"]
+        if atten <= 0:
+            continue
+        # Each binding constraint is f <= 2*pi*atten, so divide the allowed RHS range by 2*atten.
+        denom = 2.0 * atten
+        rhs_low = info["rhs_low"]
+        rhs_up = info["rhs_up"]
+
+        if rhs_low != -GRB.INFINITY and denom > 0:
+            candidate = rhs_low / denom
+            if candidate > 0:
+                pi_lower = max(pi_lower, candidate)
+        if rhs_up != GRB.INFINITY and denom > 0:
+            candidate = rhs_up / denom
+            pi_upper = min(pi_upper, candidate)
+
+    print(f"   Current pi: {pi:.6f}")
+    print(f"   pi can vary within [{pi_lower:.6f}, {pi_upper:.6f}] without changing the basis.")
+
+
 if __name__ == "__main__":
+    print("=" * 60)
+    print("PART 1: MAIN LINE DESIGN")
+    print("=" * 60)
+
     length, path, included_idx = solve_part1(verbose=False)
     print(f"Optimal main line length: {length:.2f} coordinate units")
-    print("Main line path (in order): " + " → ".join(path))
+    print("Main line path (in order): " + " -> ".join(path))
 
     # Print excluded cities
     included_names = set(path)
@@ -241,17 +360,74 @@ if __name__ == "__main__":
         print(f"- {name}")
 
     # Part 2
-    total_cost, city_flows, kielce_util = solve_part2(included_idx, verbose=False)
-    print("\n=== Part 2 results ===")
-    print(f"Total connection cost (EUR): {total_cost:,.2f}")
+    total_cost, city_flows, kielce_util, pi_rhs_ranges, konin_info = solve_part2(included_idx, verbose=False)
+    print("\n" + "="*60)
+    print("PART 2: CONNECTION OF REMAINING CITIES TO SWITCHING STATIONS")
+    print("="*60)
+    
+    print(f"\n1. TOTAL CONNECTION COSTS")
+    print(f"   Total cost to connect all remaining cities: {total_cost:,.2f} EUR")
+    
+    # Individual city connection costs
+    print(f"\n   Breakdown by city:")
+    hub_idx = {h: IDX[h] for h in HUBS}
+    R = []
+    for i, (name, x, y, area, demand) in enumerate(CITIES):
+        if i in included_idx or demand is None:
+            continue
+        R.append(i)
+    
+    for i in R:
+        city_name = CITIES[i][0]
+        city_cost = 0.0
+        for h in HUBS:
+            flow_val = city_flows.get(city_name, {}).get(h, 0.0)
+            if flow_val > 0:
+                dist = distance(i, hub_idx[h])
+                city_cost += 1000.0 * dist * flow_val
+        print(f"   - {city_name}: {city_cost:,.2f} EUR")
 
-    # Flows for Poznań and Wałbrzych
-    print("\nFlows for Poznań (TB/s):")
+    print(f"\n2. CAPACITY INSTALLATIONS")
+    print(f"   Required capacities between cities and switching stations:")
+    
+    print(f"\n   Poznań connections:")
     for h, val in city_flows["Poznań"].items():
-        print(f"  Poznań → {h}: {val:.2f}")
+        if val > 0:
+            print(f"   - Poznań -> {h}: {val:.2f} TB/s")
+        else:
+            print(f"   - Poznań -> {h}: 0.00 TB/s (no connection)")
 
-    print("\nFlows for Wałbrzych (TB/s):")
+    print(f"\n   Wałbrzych connections:")
     for h, val in city_flows["Wałbrzych"].items():
-        print(f"  Wałbrzych → {h}: {val:.2f}")
+        if val > 0:
+            print(f"   - Wałbrzych -> {h}: {val:.2f} TB/s")
+        else:
+            print(f"   - Wałbrzych -> {h}: 0.00 TB/s (no connection)")
 
-    print(f"\nKielce station utilization (TB/s): {kielce_util:.2f} / {HUB_CAP['Kielce']}")
+    print(f"\n3. SWITCHING STATION UTILIZATION")
+    kielce_capacity = HUB_CAP['Kielce']
+    kielce_percentage = (kielce_util / kielce_capacity) * 100
+    print(f"   Kielce switching station:")
+    print(f"   - Utilized capacity: {kielce_util:.2f} TB/s")
+    print(f"   - Total capacity: {kielce_capacity} TB/s")
+    print(f"   - Utilization rate: {kielce_percentage:.1f}%")
+    
+    # Show utilization for all hubs for completeness
+    for h in HUBS:
+        if h != "Kielce":
+            hub_util = sum(city_flows.get(CITIES[i][0], {}).get(h, 0.0) for i in R)
+            hub_capacity = HUB_CAP[h]
+            hub_percentage = (hub_util / hub_capacity) * 100
+            print(f"   {h} switching station:")
+            print(f"   - Utilized capacity: {hub_util:.2f} TB/s")
+            print(f"   - Total capacity: {hub_capacity} TB/s")
+            print(f"   - Utilization rate: {hub_percentage:.1f}%")
+
+    # Add sensitivity analysis section
+    print(f"\n4. SENSITIVITY ANALYSIS")
+    print(f"\n   Konin Demand Sensitivity:")
+    analyze_konin_sensitivity(konin_info)
+    
+    print(f"\n   pi Parameter Sensitivity:")
+    analyze_pi_interval(pi_rhs_ranges)
+ 

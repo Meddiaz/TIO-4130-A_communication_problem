@@ -2,3 +2,4 @@
 *.md
 task_answers/
 *.tmp
+__pycache__/
