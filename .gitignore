@@ -1,2 +1,4 @@
 *.docx
 *.md
+task_answers/
+*.tmp
