@@ -3,3 +3,4 @@
 task_answers/
 *.tmp
 __pycache__/
+outputs/
